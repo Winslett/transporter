@@ -371,14 +371,14 @@ func (postgres *Postgres) tailData() (err error) {
 			}
 
 			// Skippable because no pimary key on record
-			if dataMatches[4] == "(no-tuple-data)" {
-				fmt.Printf("No tuple data for action %v on %v.%v\n", dataMatches[3], dataMatches[1], dataMatches[2])
-				continue
-			}
-
 			// Make sure we are getting changes on valid tables
 			schemaAndTable := fmt.Sprintf("%v.%v", dataMatches[1], dataMatches[2])
 			if match := postgres.tableMatch.MatchString(schemaAndTable); !match {
+				continue
+			}
+
+			if dataMatches[4] == "(no-tuple-data)" {
+				fmt.Printf("No tuple data for action %v on %v.%v\n", dataMatches[3], dataMatches[1], dataMatches[2])
 				continue
 			}
 
