@@ -201,59 +201,6 @@ func (postgres *Postgres) writeMessage(msg *message.Msg) (*message.Msg, error) {
 	return msg, nil
 }
 
-func (postgres *Postgres) bulkWriter() {
-
-	for {
-		select {
-		case doc := <-postgres.bulkWriteChannel:
-			sz, err := docSize(doc.Doc)
-			if err != nil {
-				postgres.pipe.Err <- NewError(ERROR, postgres.path, fmt.Sprintf("postgres error (%s)", err.Error()), doc)
-				break
-			}
-
-			if ((sz + postgres.opsBufferSize) > MONGO_BUFFER_SIZE) || (postgres.opsBufferCount == MONGO_BUFFER_LEN) {
-				postgres.writeBuffer() // send it off to be inserted
-			}
-
-			postgres.buffLock.Lock()
-			postgres.opsBufferCount += 1
-			postgres.opsBuffer[doc.Collection] = append(postgres.opsBuffer[doc.Collection], doc.Doc)
-			postgres.opsBufferSize += sz
-			postgres.buffLock.Unlock()
-		case <-time.After(2 * time.Second):
-			postgres.writeBuffer()
-		case q := <-postgres.bulkQuitChannel:
-			postgres.writeBuffer()
-			q <- true
-		}
-	}
-}
-
-func (postgres *Postgres) writeBuffer() {
-	fmt.Println("Write buffer is unimplemented")
-	//postgres.buffLock.Lock()
-	//defer postgres.buffLock.Unlock()
-	//for coll, docs := range postgres.opsBuffer {
-
-	//collection := postgres.mongoSession.DB(postgres.database).C(coll)
-	//if len(docs) == 0 {
-	//continue
-	//}
-
-	//err := collection.Insert(docs...)
-
-	//if err != nil {
-	//postgres.pipe.Err <- NewError(ERROR, postgres.path, fmt.Sprintf("postgres error (%s)", err.Error()), docs[0])
-	//}
-
-	//}
-
-	//postgres.opsBufferCount = 0
-	//postgres.opsBuffer = make(map[string][]interface{})
-	//postgres.opsBufferSize = 0
-}
-
 // catdata pulls down the original tables
 func (postgres *Postgres) catData() (err error) {
 	fmt.Println("Exporting data from matching tables:")
