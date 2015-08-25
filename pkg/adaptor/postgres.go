@@ -1,8 +1,10 @@
 package adaptor
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,9 +20,10 @@ import (
 // it works as a source by copying files, and then optionally tailing the oplog
 type Postgres struct {
 	// pull these in from the node
-	uri   string
-	tail  bool // run the tail oplog
-	debug bool
+	uri             string
+	tail            bool   // run the tail oplog
+	replicationSlot string // logical replication slot to use for changes
+	debug           bool
 
 	// save time by setting these once
 	tableMatch *regexp.Regexp
@@ -78,6 +81,7 @@ func NewPostgres(p *pipe.Pipe, path string, extra Config) (StopStartListener, er
 		pipe:             p,
 		uri:              conf.URI,
 		tail:             conf.Tail,
+		replicationSlot:  conf.ReplicationSlot,
 		debug:            conf.Debug,
 		path:             path,
 		opsBuffer:        make(map[string][]interface{}),
@@ -95,10 +99,6 @@ func NewPostgres(p *pipe.Pipe, path string, extra Config) (StopStartListener, er
 	postgres.postgresSession, err = sql.Open("postgres", postgres.uri)
 	if err != nil {
 		return postgres, fmt.Errorf("unable to parse uri (%s), %s\n", postgres.uri, err.Error())
-	}
-
-	if postgres.tail {
-		fmt.Println("Have not implemented Postgres tailing yet.")
 	}
 
 	return postgres, nil
@@ -280,7 +280,7 @@ func (postgres *Postgres) catTable(table_schema string, table_name string) (err 
 	}
 
 	// get columns for table
-	columnsResult, err := postgres.postgresSession.Query(fmt.Sprintf("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '%v'", table_name))
+	columnsResult, err := postgres.postgresSession.Query(fmt.Sprintf("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '%v' AND table_schema = '%v'", table_name, table_schema))
 	if err != nil {
 		return err
 	}
@@ -336,46 +336,63 @@ func (postgres *Postgres) catTable(table_schema string, table_name string) (err 
 	return
 }
 
-//var (
-//query  = bson.M{}
-//result bson.M // hold the document
-//)
-
-//iter := postgres.mongoSession.DB(postgres.database).C(collection).Find(query).Sort("_id").Iter()
-
-//for {
-//for iter.Next(&result) {
-//if stop := postgres.pipe.Stopped; stop {
-//return
-//}
-
-//// set up the message
-//msg := message.NewMsg(message.Insert, result, postgres.computeNamespace(collection))
-
-//postgres.pipe.Send(msg)
-//result = bson.M{}
-//}
-
-//// we've exited the mongo read loop, lets figure out why
-//// check here again if we've been asked to quit
-//if stop := postgres.pipe.Stopped; stop {
-//return
-//}
-
-//if iter.Err() != nil && postgres.restartable {
-//fmt.Printf("got err reading collection. reissuing query %v\n", iter.Err())
-//time.Sleep(1 * time.Second)
-//iter = postgres.mongoSession.DB(postgres.database).C(collection).Find(query).Sort("_id").Iter()
-//continue
-//}
-//break
-//}
-
-/*
- * tail the logical data
- */
+// tail the logical data
 func (postgres *Postgres) tailData() (err error) {
-	fmt.Println("Tailing data is unimplemented.")
+	for {
+		dataMatcher := regexp.MustCompile("^table ([^\\.]+).([^\\.]+): (INSERT|DELETE|UPDATE): (.+)$") // 1 - schema, 2 - table, 3 - action, 4 - remaining
+
+		fmt.Printf(".")
+		changesResult, err := postgres.postgresSession.Query(fmt.Sprintf("SELECT * FROM pg_logical_slot_get_changes('%v', NULL, NULL);", postgres.replicationSlot))
+		if err != nil {
+			return err
+		}
+		for changesResult.Next() {
+			var (
+				location string
+				xid      string
+				data     string
+			)
+
+			err = changesResult.Scan(&location, &xid, &data)
+			if err != nil {
+				return err
+			}
+
+			// Ensure we are getting a data change row
+			dataMatches := dataMatcher.FindStringSubmatch(data)
+			if len(dataMatches) == 0 {
+				continue
+			}
+
+			// Make sure we are getting changes on valid tables
+			schemaAndTable := fmt.Sprintf("%v.%v", dataMatches[1], dataMatches[2])
+			if match := postgres.tableMatch.MatchString(schemaAndTable); !match {
+				continue
+			}
+
+			// normalize the action
+			var action message.OpType
+			switch {
+			case dataMatches[3] == "INSERT":
+				action = message.Insert
+			case dataMatches[3] == "DELETE":
+				action = message.Delete
+			case dataMatches[3] == "UPDATE":
+				action = message.Update
+			}
+
+			docMap, err := postgres.ParseLogicalDecodingData(dataMatches[4])
+			if err != nil {
+				return err
+			}
+
+			msg := message.NewMsg(action, docMap, schemaAndTable)
+			postgres.pipe.Send(msg)
+		}
+
+		fmt.Printf(".")
+		time.Sleep(3 * time.Second)
+	}
 	return
 
 	//var (
@@ -497,14 +514,15 @@ func (l *logicalDoc) validOp() bool {
 // PostgresConfig provides configuration options for a postgres adaptor
 // the notable difference between this and dbConfig is the presence of the Tail option
 type PostgresConfig struct {
-	URI       string `json:"uri" doc:"the uri to connect to, in the form 'user=my-user password=my-password dbname=dbname sslmode=require'"`
-	Namespace string `json:"namespace" doc:"mongo namespace to read/write"`
-	Timeout   string `json:timeout" doc:"timeout for establishing connection, format must be parsable by time.ParseDuration and defaults to 10s"`
-	Debug     bool   `json:"debug" doc:"display debug information"`
-	Tail      bool   `json:"tail" doc:"if tail is true, then the postgres source will tail the oplog after copying the namespace"`
-	Wc        int    `json:"wc" doc:"The write concern to use for writes, Int, indicating the minimum number of servers to write to before returning success/failure"`
-	FSync     bool   `json:"fsync" doc:"When writing, should we flush to disk before returning success"`
-	Bulk      bool   `json:"bulk" doc:"use a buffer to bulk insert documents"`
+	URI             string `json:"uri" doc:"the uri to connect to, in the form 'user=my-user password=my-password dbname=dbname sslmode=require'"`
+	Namespace       string `json:"namespace" doc:"mongo namespace to read/write"`
+	Timeout         string `json:timeout" doc:"timeout for establishing connection, format must be parsable by time.ParseDuration and defaults to 10s"`
+	Debug           bool   `json:"debug" doc:"display debug information"`
+	Tail            bool   `json:"tail" doc:"if tail is true, then the postgres source will tail the oplog after copying the namespace"`
+	ReplicationSlot string `json:"replication_slot" doc:"required if tail is true; sets the replication slot to use for logical decoding"`
+	Wc              int    `json:"wc" doc:"The write concern to use for writes, Int, indicating the minimum number of servers to write to before returning success/failure"`
+	FSync           bool   `json:"fsync" doc:"When writing, should we flush to disk before returning success"`
+	Bulk            bool   `json:"bulk" doc:"use a buffer to bulk insert documents"`
 }
 
 // find the size of a document in bytes
@@ -516,4 +534,130 @@ func rowSize(ops interface{}) (int, error) {
 	//}
 	//return len(b), nil
 	return 3, nil
+}
+
+func (postgres *Postgres) ParseLogicalDecodingData(data string) (docMap map[string]interface{}, err error) {
+	docMap = make(map[string]interface{})
+
+	var (
+		label                  string
+		labelFinished          bool
+		valueType              string
+		valueTypeFinished      bool
+		openBracketInValueType bool
+		skippedColon           bool
+		value                  string // will type switch later
+		valueEndCharacter      string
+		defferedSingleQuote    bool
+		valueFinished          bool
+	)
+
+	valueTypeFinished = false
+	labelFinished = false
+	skippedColon = false
+	defferedSingleQuote = false
+	openBracketInValueType = false
+	valueFinished = false
+
+	for _, character := range data {
+		if !labelFinished {
+			if string(character) == "[" {
+				labelFinished = true
+				continue
+			}
+			label = fmt.Sprintf("%v%v", label, string(character))
+			continue
+		}
+
+		if !valueTypeFinished {
+			if openBracketInValueType && string(character) == "]" { // if a bracket is open, close it
+				openBracketInValueType = false
+			} else if string(character) == "]" { // if a bracket is not open, finish valueType
+				valueTypeFinished = true
+				continue
+			} else if string(character) == "[" {
+				openBracketInValueType = true
+			}
+			valueType = fmt.Sprintf("%v%v", valueType, string(character))
+			continue
+		}
+
+		if !skippedColon && string(character) == ":" {
+			skippedColon = true
+			continue
+		}
+
+		if len(valueEndCharacter) == 0 {
+			if string(character) == "'" {
+				valueEndCharacter = "'"
+				continue
+			}
+
+			valueEndCharacter = " "
+		}
+
+		// ending with '
+		if defferedSingleQuote && string(character) == " " { // we hit an unescaped single quote
+			valueFinished = true
+		} else if defferedSingleQuote && string(character) == "'" { // we hit an escaped single quote ''
+			defferedSingleQuote = false
+		} else if string(character) == "'" && !defferedSingleQuote { // we hit a first single quote
+			defferedSingleQuote = true
+			continue
+		}
+
+		// ending with space
+		if valueEndCharacter == " " && string(character) == valueEndCharacter {
+			valueFinished = true
+		}
+
+		// continue parsing
+		if !valueFinished {
+			value = fmt.Sprintf("%v%v", value, string(character))
+			continue
+		}
+
+		// Set and reset
+		docMap[label] = casifyValue(value, valueType)
+
+		label = ""
+		labelFinished = false
+		valueType = ""
+		valueTypeFinished = false
+		skippedColon = false
+		defferedSingleQuote = false
+		value = ""
+		valueEndCharacter = ""
+		valueFinished = false
+	}
+	if len(label) > 0 { // ensure we process any line ending abruptly
+		docMap[label] = casifyValue(value, valueType)
+	}
+	return
+}
+
+func casifyValue(value string, valueType string) interface{} {
+	switch {
+	case value == "null":
+		return nil
+	case valueType == "integer":
+		i, _ := strconv.Atoi(value)
+		return i
+	case valueType == "double precision":
+		f, _ := strconv.ParseFloat(value, 64)
+		return f
+	case valueType == "jsonb[]":
+		var m map[string]interface{}
+		json.Unmarshal([]byte(value), &m)
+		return m
+	case valueType == "timestamp without time zone":
+		// parse time like 2015-08-21 16:09:02.988058
+		t, err := time.Parse("2006-01-02 15:04:05.9", value)
+		if err != nil {
+			fmt.Printf("\nTime (%v) parse error: %v\n\n", value, err)
+		}
+		return t
+	}
+
+	return value
 }
