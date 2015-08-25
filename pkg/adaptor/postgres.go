@@ -33,6 +33,7 @@ type Postgres struct {
 	//
 	pipe *pipe.Pipe
 	path string
+	pg   *pq.Dialer // stub to ensure pq is kept / used and does not error
 
 	// postgres connection and options
 	postgresSession *sql.DB
