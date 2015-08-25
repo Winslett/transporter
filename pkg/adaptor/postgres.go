@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/compose/transporter/pkg/message"
@@ -40,21 +39,7 @@ type Postgres struct {
 	postgresSession *sql.DB
 	oplogTimeout    time.Duration
 
-	// a buffer to hold documents
-	buffLock         sync.Mutex
-	opsBufferCount   int
-	opsBuffer        map[string][]interface{}
-	opsBufferSize    int
-	bulkWriteChannel chan *SyncRow
-	bulkQuitChannel  chan chan bool
-	bulk             bool
-
 	restartable bool // this refers to being able to refresh the iterator, not to the restart based on session op
-}
-
-type SyncRow struct {
-	Doc        map[string]interface{}
-	Collection string
 }
 
 // NewPostgres creates a new Postgres adaptor
@@ -76,18 +61,14 @@ func NewPostgres(p *pipe.Pipe, path string, extra Config) (StopStartListener, er
 	}
 
 	postgres := &Postgres{
-		restartable:      true,            // assume for that we're able to restart the process
-		oplogTimeout:     5 * time.Second, // timeout the oplog iterator
-		pipe:             p,
-		uri:              conf.URI,
-		tail:             conf.Tail,
-		replicationSlot:  conf.ReplicationSlot,
-		debug:            conf.Debug,
-		path:             path,
-		opsBuffer:        make(map[string][]interface{}),
-		bulkWriteChannel: make(chan *SyncRow),
-		bulkQuitChannel:  make(chan chan bool),
-		bulk:             conf.Bulk,
+		restartable:     true,            // assume for that we're able to restart the process
+		oplogTimeout:    5 * time.Second, // timeout the oplog iterator
+		pipe:            p,
+		uri:             conf.URI,
+		tail:            conf.Tail,
+		replicationSlot: conf.ReplicationSlot,
+		debug:           conf.Debug,
+		path:            path,
 	}
 
 	postgres.database, postgres.tableMatch, err = extra.compileNamespace()
@@ -141,22 +122,12 @@ func (postgres *Postgres) Listen() (err error) {
 		postgres.pipe.Stop()
 	}()
 
-	if postgres.bulk {
-		go postgres.bulkWriter()
-	}
 	return postgres.pipe.Listen(postgres.writeMessage, postgres.tableMatch)
 }
 
 // Stop the adaptor
 func (postgres *Postgres) Stop() error {
 	postgres.pipe.Stop()
-
-	// if we're bulk writing, ask our writer to exit here
-	if postgres.bulk {
-		q := make(chan bool)
-		postgres.bulkQuitChannel <- q
-		<-q
-	}
 
 	return nil
 }
@@ -165,38 +136,7 @@ func (postgres *Postgres) Stop() error {
 // TODO this can be cleaned up.  I'm not sure whether this should pipe the error, or whether the
 //   caller should pipe the error
 func (postgres *Postgres) writeMessage(msg *message.Msg) (*message.Msg, error) {
-	//_, msgColl, err := msg.SplitNamespace()
-	//if err != nil {
-	//postgres.pipe.Err <- NewError(ERROR, postgres.path, fmt.Sprintf("postgres error (msg namespace improperly formatted, must be database.collection, got %s)", msg.Namespace), msg.Data)
-	//return msg, nil
-	//}
-
-	fmt.Println("Run query with %v", msg)
-	//collection := postgres.postgresSession.DB(postgres.database).C(msgColl)
-
-	//if !msg.IsMap() {
-	//postgres.pipe.Err <- NewError(ERROR, postgres.path, fmt.Sprintf("postgres error (document must be a bson document, got %T instead)", msg.Data), msg.Data)
-	//return msg, nil
-	//}
-
-	//doc := &SyncRow{
-	//Doc:        msg.Map(),
-	//Collection: msgColl,
-	//}
-
-	//if postgres.bulk {
-	//postgres.bulkWriteChannel <- doc
-	//} else if msg.Op == message.Delete {
-	//err := collection.Remove(doc.Doc)
-	//if err != nil {
-	//postgres.pipe.Err <- NewError(ERROR, postgres.path, fmt.Sprintf("postgres error removing (%s)", err.Error()), msg.Data)
-	//}
-	//} else {
-	//err := collection.Insert(doc.Doc)
-	//if err != nil {
-	//postgres.pipe.Err <- NewError(ERROR, postgres.path, fmt.Sprintf("postgres error (%s)", err.Error()), msg.Data)
-	//}
-	//}
+	fmt.Println("Not yet writingMessages to Postgres")
 
 	return msg, nil
 }
