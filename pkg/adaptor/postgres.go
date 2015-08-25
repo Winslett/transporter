@@ -89,11 +89,15 @@ func NewPostgres(p *pipe.Pipe, path string, extra Config) (StopStartListener, er
 		bulkQuitChannel:  make(chan chan bool),
 		bulk:             conf.Bulk,
 	}
-	// opsBuffer:        make([]*SyncRow, 0, MONGO_BUFFER_LEN),
 
 	postgres.database, postgres.tableMatch, err = extra.compileNamespace()
 	if err != nil {
 		return postgres, err
+	}
+
+	matchDbName := regexp.MustCompile(fmt.Sprintf("dbname=%v", postgres.database))
+	if match := matchDbName.MatchString(postgres.uri); !match {
+		return postgres, fmt.Errorf("Mismatch database name in YAML config and app javascript.  Postgres URI should, but does not contain dbname=%v", postgres.database)
 	}
 
 	postgres.postgresSession, err = sql.Open("postgres", postgres.uri)
@@ -252,7 +256,7 @@ func (postgres *Postgres) writeBuffer() {
 
 // catdata pulls down the original tables
 func (postgres *Postgres) catData() (err error) {
-	fmt.Println("Query for tables in database.")
+	fmt.Println("Exporting data from matching tables:")
 	tablesResult, err := postgres.postgresSession.Query("SELECT table_schema,table_name FROM information_schema.tables")
 	if err != nil {
 		return err
@@ -278,6 +282,8 @@ func (postgres *Postgres) catTable(table_schema string, table_name string) (err 
 	} else if match := postgres.tableMatch.MatchString(schemaAndTable); !match {
 		return
 	}
+
+	fmt.Printf("  exporting %v.%v\n", table_schema, table_name)
 
 	// get columns for table
 	columnsResult, err := postgres.postgresSession.Query(fmt.Sprintf("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '%v' AND table_schema = '%v'", table_name, table_schema))
@@ -338,10 +344,10 @@ func (postgres *Postgres) catTable(table_schema string, table_name string) (err 
 
 // tail the logical data
 func (postgres *Postgres) tailData() (err error) {
+	fmt.Printf("Listening for changes on logical decoding slot '%v'\n", postgres.replicationSlot)
 	for {
 		dataMatcher := regexp.MustCompile("^table ([^\\.]+).([^\\.]+): (INSERT|DELETE|UPDATE): (.+)$") // 1 - schema, 2 - table, 3 - action, 4 - remaining
 
-		fmt.Printf(".")
 		changesResult, err := postgres.postgresSession.Query(fmt.Sprintf("SELECT * FROM pg_logical_slot_get_changes('%v', NULL, NULL);", postgres.replicationSlot))
 		if err != nil {
 			return err
@@ -364,6 +370,12 @@ func (postgres *Postgres) tailData() (err error) {
 				continue
 			}
 
+			// Skippable because no pimary key on record
+			if dataMatches[4] == "(no-tuple-data)" {
+				fmt.Printf("No tuple data for action %v on %v.%v\n", dataMatches[3], dataMatches[1], dataMatches[2])
+				continue
+			}
+
 			// Make sure we are getting changes on valid tables
 			schemaAndTable := fmt.Sprintf("%v.%v", dataMatches[1], dataMatches[2])
 			if match := postgres.tableMatch.MatchString(schemaAndTable); !match {
@@ -379,7 +391,11 @@ func (postgres *Postgres) tailData() (err error) {
 				action = message.Delete
 			case dataMatches[3] == "UPDATE":
 				action = message.Update
+			case true:
+				return fmt.Errorf("Error processing action from string: %v", data)
 			}
+
+			fmt.Printf("%v on %v.%v\n", dataMatches[3], dataMatches[1], dataMatches[2])
 
 			docMap, err := postgres.ParseLogicalDecodingData(dataMatches[4])
 			if err != nil {
@@ -390,7 +406,6 @@ func (postgres *Postgres) tailData() (err error) {
 			postgres.pipe.Send(msg)
 		}
 
-		fmt.Printf(".")
 		time.Sleep(3 * time.Second)
 	}
 	return
