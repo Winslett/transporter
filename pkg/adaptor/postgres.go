@@ -33,7 +33,6 @@ type Postgres struct {
 	//
 	pipe *pipe.Pipe
 	path string
-	pg   *pq.Dialer
 
 	// postgres connection and options
 	postgresSession *sql.DB
