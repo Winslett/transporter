@@ -14,9 +14,10 @@ This tutorial will transfer data from a Postgres database to a  RethinkDB.
   ```sql
   CREATE DATABASE my_source_db;
   \connect my_source_db
-  CREATE TABLE users (id SERIAL PRIMARY KEY, name VARCHAR(255), created_at TIMESTAMP);
+
   SELECT * FROM pg_create_logical_replication_slot('rethink_transporter', 'test_decoding');
 
+  CREATE TABLE users (id SERIAL PRIMARY KEY, name VARCHAR(255), created_at TIMESTAMP);
   INSERT INTO users (name, created_at) VALUES ('Chris', now()), ('Kyle', now()), ('Michele', now());
   ```
 
@@ -29,74 +30,80 @@ This tutorial will transfer data from a Postgres database to a  RethinkDB.
 5. Create a file called `config.yaml`, which will hold the data adapter
    configurations
 
-```yaml
-nodes:
-  postgres:
-    type: postgres
-    uri: "host=localhost sslmode=disable dbname=my_source_db"
-  rethink:
-    type: rethinkdb
-    uri: rethink://localhost:28015/
-```
+  ```yaml
+  nodes:
+    postgres:
+      type: postgres
+      uri: "host=localhost sslmode=disable dbname=my_source_db"
+    rethink:
+      type: rethinkdb
+      uri: rethink://localhost:28015/
+  ```
 
 6. Create a file called `application.js` which will define the data movement:
 
-```js
-pipeline = Source({
-  name: "postgres",
-  namespace: "my_source_db.public..*",
-  tail: true,
-  replication_slot: "rethink_transporter"
-})
+  ```js
+  pipeline = Source({
+    name: "postgres",
+    namespace: "my_source_db.public..*",
+    tail: true,
+    replication_slot: "rethink_transporter"
+  })
 
-pipeline.save({
-  name: "rethink",
-  namespace: "myDestDB..*"
-})
-```
+  pipeline.save({
+    name: "rethink",
+    namespace: "myDestDB..*"
+  })
+  ```
 
-7. Go to Rethink and run query for:
+7. Run transporter:
 
-```
-r.db("myDestDB").table("users")
-```
+  ```
+  ./transporter run --config config.yaml application.js
+  ```
 
-8. Go to Postgres, and update users:
+8. Go to Rethink and run query for:
 
-```sql
-UPDATE users SET name = 'Jason' WHERE id = 1;
-```
+  ```
+  r.db("myDestDB").table("users")
+  ```
 
-9. Go back to Rethink, and rerun your query.  The name should have
+9. Go to Postgres, and update users:
+
+  ```sql
+  UPDATE users SET name = 'Jason' WHERE id = 1;
+  ```
+
+10. Go back to Rethink, and rerun your query.  The name should have
    updated.  You'll see duplicates.  The problem is mis-matching primary
    keys.  This is where transformations can help.
 
-10.  Create a `transform.js` file like this:
+11.  Create a `transform.js` file like this:
 
-```js
-module.exports = function(doc) {
-  doc.data._id = doc.data["id"]
-  delete doc.data["id"]
-  return doc
-}
-```
+  ```js
+  module.exports = function(doc) {
+    doc.data._id = doc.data["id"]
+    delete doc.data["id"]
+    return doc
+  }
+  ```
 
-11. Add the following lines to `application.js`:
+12. Add the following lines to `application.js`:
 
-```js
-pipeline.transform({
-  namespace: "public..*",
-  filename: "transform.js"
-}).save({
-  name: "rethink",
-  namespace: "myDestDB..*"
-})
-```
+  ```js
+  pipeline.transform({
+    namespace: "public..*",
+    filename: "transform.js"
+  }).save({
+    name: "rethink",
+    namespace: "myDestDB..*"
+  })
+  ```
 
-12. Drop the RethinkDB table and re-create.  Then, rerun transporter.
+13. Drop the RethinkDB table and re-create.  Then, rerun transporter.
 
-13. Go to Postgres, and re-update user:
+14. Go to Postgres, and re-update user:
 
-```sql
-UPDATE users SET name = 'Chris' WHERE id = 1;
-```
+  ```sql
+  UPDATE users SET name = 'Chris' WHERE id = 1;
+  ```
