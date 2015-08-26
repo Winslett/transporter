@@ -10,7 +10,7 @@ This tutorial will transfer data from a Postgres database to a  RethinkDB.
 
   * in your `postgresql.conf` file, change the following:
   ```
-  wal_level='logical'
+  wal_level=logical
   max_replication_slots=1
   ```
   * Run the following to initialize your source db:
