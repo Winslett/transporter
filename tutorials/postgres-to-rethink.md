@@ -1,6 +1,6 @@
 # Move data from Postgres to RethinkDB
 
-This tutorial will transfer data from a Postgres database to a  RethinkDB.
+This tutorial will transfer data from a Postgres database to a RethinkDB.
 
 1. Setup a working directory for this transporter example
 
@@ -8,12 +8,16 @@ This tutorial will transfer data from a Postgres database to a  RethinkDB.
 
 3. Configure local Postgres
 
-  * in your `postgresql.conf` file, change the following:
+  * Install postgresql (e.g. brew install postgresql)
+  * Make a data directory - `mkdir data`
+  * Initialise for postgresql - `initdb -D data -U postgres`
+  * in the `data/postgresql.conf` file, uncomment and change the following:
   ```
   wal_level=logical
   max_replication_slots=1
   ```
-  * Run the following to initialize your source db:
+  * Run your PostgreSQL database - `postgresql -D data &`
+  * Run the following to initialize your source db (connect with `psql -U postgres postgres`):
   ```sql
   CREATE DATABASE my_source_db;
   \connect my_source_db
@@ -26,7 +30,9 @@ This tutorial will transfer data from a Postgres database to a  RethinkDB.
 
 4. Start local Rethink
 
-  * go to http://localhost:8080
+  * Install with `brew install rethinkdb`
+  * Run with `/usr/local/bin/rethinkdb`
+  * Browse to http://localhost:8080
   * create a new database called 'myDestDB'
   * create a table for `users` with Primary Index for `_id`
 
@@ -71,7 +77,8 @@ This tutorial will transfer data from a Postgres database to a  RethinkDB.
   r.db("myDestDB").table("users")
   ```
 
-9. Go to Postgres, and update users:
+9. Go to Postgres (`psql -U postgres postgres` then `\connect my_source_db`)
+   and update users:
 
   ```sql
   UPDATE users SET name = 'Jason' WHERE id = 1;
@@ -103,7 +110,13 @@ This tutorial will transfer data from a Postgres database to a  RethinkDB.
   })
   ```
 
-13. Drop the RethinkDB table and re-create.  Then, rerun transporter.
+13. Drop the RethinkDB table and re-create. 
+    Use the UI or run
+ ```js
+ r.db("myDestDB").tableDrop("users")
+ r.db("myDestDB").tableCreate("users",{ primaryKey:"_id" })
+ ```
+   Then, rerun transporter.
 
 14. Go to Postgres, and re-update user:
 
