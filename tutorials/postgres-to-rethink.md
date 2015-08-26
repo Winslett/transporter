@@ -4,7 +4,7 @@ This tutorial will transfer data from a Postgres database to a  RethinkDB.
 
 1. Setup a working directory for this transporter example
 
-2. Download the `transporter` binary into the directory from https://github.com/Winslett/transporter/releases/tag/1.0-postgres
+2. Download the `transporter` binary into the directory from https://github.com/Winslett/transporter/releases/tag/beta-postgres
 
 3. Configure local Postgres
 
