@@ -12,7 +12,7 @@ import (
 	"github.com/compose/transporter/pkg/pipe"
 
 	"database/sql"
-	"github.com/lib/pq"
+	_ "github.com/lib/pq"
 )
 
 // Postgres is an adaptor to read / write to postgres.
@@ -33,7 +33,6 @@ type Postgres struct {
 	//
 	pipe *pipe.Pipe
 	path string
-	pg   *pq.Dialer // stub to ensure pq is kept / used and does not error
 
 	// postgres connection and options
 	postgresSession *sql.DB
@@ -136,7 +135,43 @@ func (postgres *Postgres) Stop() error {
 // TODO this can be cleaned up.  I'm not sure whether this should pipe the error, or whether the
 //   caller should pipe the error
 func (postgres *Postgres) writeMessage(msg *message.Msg) (*message.Msg, error) {
-	fmt.Println("Not yet writingMessages to Postgres")
+	switch {
+	case msg.Op == message.Insert:
+		var (
+			keys         []string
+			placeholders []string
+			data         []interface{}
+		)
+
+		i := 1
+		for key, value := range msg.Map() {
+			keys = append(keys, key)
+			placeholders = append(placeholders, fmt.Sprintf("$%v", i))
+
+			switch value.(type) {
+			case map[string]interface{}:
+				value, _ = json.Marshal(value)
+			}
+			data = append(data, value)
+
+			i = i + 1
+		}
+
+		query := fmt.Sprintf("INSERT INTO %v (%v) VALUES (%v);", msg.Namespace, strings.Join(keys, ", "), strings.Join(placeholders, ", "))
+
+		_, err := postgres.postgresSession.Exec(query, data...)
+
+		if err != nil {
+			fmt.Printf("Error INSERTING to Postgres with error (%v) on query (%v) with data (%v)\n", err, query, data)
+			return msg, nil
+		}
+	case msg.Op == message.Update:
+		fmt.Printf("Update Postgres %v values %v\n", msg.Namespace, msg.Data)
+	case msg.Op == message.Delete:
+		fmt.Printf("DELETE FROM Postgres %v values %v\n", msg.Namespace, msg.Data)
+	case true:
+
+	}
 
 	return msg, nil
 }
