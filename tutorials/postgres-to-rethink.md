@@ -91,7 +91,7 @@ This tutorial will transfer data from a Postgres database to a  RethinkDB.
   }
   ```
 
-12. Add the following lines to `application.js`:
+12. Replace the old save with the following lines in the `application.js`:
 
   ```js
   pipeline.transform({
