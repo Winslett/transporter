@@ -1,4 +1,4 @@
-# Using Transporter to Export Data from Postgres -> RethinkDB
+# Move data from Postgres to RethinkDB
 
 This tutorial will transfer data from a Postgres database to a  RethinkDB.
 
@@ -8,8 +8,11 @@ This tutorial will transfer data from a Postgres database to a  RethinkDB.
 
 3. Configure local Postgres
 
-  * set `wal_level='logical'`
-  * set `max_replication_slots=1`
+  * in your `postgresql.conf` file, change the following:
+  ```
+  wal_level='logical'
+  max_replication_slots=1
+  ```
   * Run the following to initialize your source db:
   ```sql
   CREATE DATABASE my_source_db;
